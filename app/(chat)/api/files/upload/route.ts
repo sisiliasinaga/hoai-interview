@@ -1,4 +1,10 @@
 import {NextResponse} from 'next/server';
+import Tesseract from 'tesseract.js';
+import { getDocument } from 'pdfjs-dist';
+import type { RenderParameters } from 'pdfjs-dist/types/src/display/api';
+import { createCanvas } from 'canvas';
+import fs from 'fs/promises';
+import path from 'path';
 import {z} from 'zod';
 import {auth} from '@/app/(auth)/auth';
 
@@ -10,10 +16,49 @@ const FileSchema = z.object({
       message: 'File size should be less than 5MB',
     })
     // Update the file type based on the kind of files you want to accept
-    .refine((file) => ['image/jpeg', 'image/png'].includes(file.type), {
-      message: 'File type should be JPEG or PNG',
+    .refine((file) => ['image/jpeg', 'image/png', 'application/pdf'].includes(file.type), {
+      message: 'File type should be JPEG, PNG, or PDF',
     }),
 });
+
+// Function to extract text from PDF
+async function extractTextFromPDF(pdfBuffer: Buffer): Promise<string> {
+  const pdfDoc = await getDocument(pdfBuffer).promise;
+  let extractedText = '';
+
+  for (let i = 1; i <= pdfDoc.numPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const viewport = page.getViewport({ scale: 2.0 });
+
+    // Create a canvas to render PDF pages
+    const canvas = createCanvas(viewport.width, viewport.height);
+    const context = canvas.getContext('2d');
+
+    const renderContext: RenderParameters = {
+      canvasContext: context as unknown as CanvasRenderingContext2D,
+      viewport,
+    };
+
+    await page.render(renderContext).promise;
+    
+    // Convert canvas to image buffer
+    const imageBuffer = canvas.toBuffer('image/png');
+    const tempImagePath = path.join("/tmp", `page_${i}.png`);
+    await fs.writeFile(tempImagePath, imageBuffer);
+
+    // Perform OCR on the image
+    extractedText += await processOCR(tempImagePath) + '\n';
+    await fs.unlink(tempImagePath);
+  }
+
+  return extractedText;
+}
+
+// Handle file upload and OCR
+async function processOCR(imagePath: string) {
+  const { data: { text } } = await Tesseract.recognize(imagePath, 'eng');
+  return text;
+}
 
 export async function POST(request: Request) {
   const session = await auth();
