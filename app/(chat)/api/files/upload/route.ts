@@ -62,22 +62,13 @@ async function processOCR(imagePath: string) {
 
 export async function POST(request: Request) {
   const session = await auth();
-
-  if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  if (request.body === null) {
-    return new Response('Request body is empty', { status: 400 });
-  }
+  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (request.body === null) return new Response('Request body is empty', { status: 400 });
 
   try {
     const formData = await request.formData();
     const file = formData.get('file') as Blob;
-
-    if (!file) {
-      return NextResponse.json({ error: 'No file uploaded' }, { status: 400 });
-    }
+    if (!file) return NextResponse.json({ error: 'No file uploaded' }, { status: 400 });
 
     const validatedFile = FileSchema.safeParse({ file });
 
@@ -86,7 +77,7 @@ export async function POST(request: Request) {
         .map((error) => error.message)
         .join(', ');
 
-      return NextResponse.json({ error: errorMessage }, { status: 400 });
+      return NextResponse.json({ error: validatedFile.error.errors.map(e => e.message).join(', ') }, { status: 400 });
     }
 
     // Get filename from formData since Blob doesn't have name property
@@ -94,26 +85,27 @@ export async function POST(request: Request) {
     const fileBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(fileBuffer);
 
-    try {
-      // Generate unique filename with timestamp
-      const timestamp = Date.now();
-      const uniqueFilename = `${timestamp}-${filename}`;
-
-      // Create data URL for immediate preview
-      const dataURL = `data:${file.type};base64,${buffer.toString('base64')}`;
-
-      return NextResponse.json({
-        url: dataURL,
-        pathname: `/uploads/${uniqueFilename}`,
-        contentType: file.type
-      });
-    } catch (error) {
-      return NextResponse.json({ error: 'Upload failed' }, { status: 500 });
+    let extractedText = '';
+    if (file.type === 'application/pdf') {
+      extractedText = await extractTextFromPDF(buffer);
+    } else {
+      const tempPath = path.join("/tmp", `upload-${Date.now()}.png`);
+      await fs.writeFile(tempPath, buffer);
+      extractedText = await processOCR(tempPath);
+      await fs.unlink(tempPath);
     }
+
+    const timestamp = Date.now();
+    const uniqueFilename = `${timestamp}-${filename}`;
+    const dataURL = `data:${file.type};base64,${buffer.toString('base64')}`;
+
+    return NextResponse.json({
+      url: dataURL,
+      pathname: `/uploads/${uniqueFilename}`,
+      contentType: file.type,
+      text: extractedText
+    });
   } catch (error) {
-    return NextResponse.json(
-      { error: 'Failed to process request' },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: 'Failed to process request' }, { status: 500 });
   }
 }
